@@ -30,6 +30,23 @@ function firstJSONObject(text,start){
 }
 function articles(d){if(Array.isArray(d))return d.flatMap(articles);if(!d||typeof d!=='object')return [];return [...([].concat(d['@type']||[]).some(t=>['NewsArticle','Article','ReportageNewsArticle'].includes(t))?[d]:[]),...articles(d['@graph'])];}
 function metadata(source){const result={};for(const m of source.matchAll(/<meta\b[^>]*>/gi)){const attrs={};for(const a of m[0].matchAll(/([\w:-]+)\s*=\s*(["'])([\s\S]*?)\2/g))attrs[a[1].toLowerCase()]=plain(a[3]);if(attrs.property||attrs.name)result[attrs.property||attrs.name]=attrs.content||'';}return result;}
+function kidsDongaContent(source,url){
+  const block=source.match(/<article\b[^>]*\bid\s*=\s*["']article-view-content-div["'][^>]*>([\s\S]*?)<\/article\s*>/i)?.[1];
+  if(!block)return null;
+  const images=[];
+  for(const figure of block.matchAll(/<figure\b[^>]*>([\s\S]*?)<\/figure\s*>/gi)){
+    const img=figure[1].match(/<img\b[^>]*>/i)?.[0];if(!img)continue;
+    const attrs={};for(const a of img.matchAll(/([\w:-]+)\s*=\s*(["'])([\s\S]*?)\2/g))attrs[a[1].toLowerCase()]=plain(a[3]);
+    const src=attrs['data-src']||attrs.src;if(!src)continue;
+    let imageURL;try{imageURL=new URL(src,url);if(!['http:','https:'].includes(imageURL.protocol))continue;}catch{continue;}
+    if(images.some(p=>p.url===imageURL.href))continue;
+    const caption=plain(figure[1].match(/<figcaption\b[^>]*>([\s\S]*?)<\/figcaption\s*>/i)?.[1]||attrs.alt||'');
+    images.push({url:imageURL.href,caption,selected:images.length===0});
+  }
+  const text=block.replace(/<(script|style|figure|iframe|aside)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'');
+  const paragraphs=[...text.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p\s*>/gi)].map(m=>plain(m[1])).filter(Boolean);
+  return {body:paragraphs.length?paragraphs.join('\n\n'):plain(text),images};
+}
 export function parseArticle(source,url){
   const meta=metadata(source),host=new URL(url).hostname;
   const out={url,title:meta['og:title']||plain(source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]),subtitle:'',body:'',extra:'',questions:'',images:[],source:meta['og:site_name']||host,date:(meta['article:published_time']||'').slice(0,10),author:'',warnings:[]};
@@ -52,9 +69,11 @@ export function parseArticle(source,url){
     const candidates=[];for(const script of source.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi))try{candidates.push(...articles(JSON.parse(script[1])));}catch{}
     const article=candidates.sort((a,b)=>String(b.articleBody||'').length-String(a.articleBody||'').length)[0];
     if(article){if([false,'false','False'].includes(article.isAccessibleForFree))throw Error('유료·구독 기사는 자동으로 가져올 수 없습니다. 이용 가능한 본문을 직접 넣어 주세요.');out.title=plain(article.headline||out.title);out.body=plain(article.articleBody);out.date=String(article.datePublished||out.date).slice(0,10);out.source=plain(article.publisher?.name||out.source);}
+    const kidsDonga=host==='kids.donga.com'?kidsDongaContent(source,url):null;
+    if(kidsDonga?.body){out.body=kidsDonga.body;out.images=kidsDonga.images;out.source='어린이동아';}
     if(!out.body){const block=source.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1];if(block){out.body=[...block.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)].map(m=>plain(m[1])).filter(p=>p.length>35).join('\n\n');if(out.body)out.warnings.push('본문 영역에서 추출했습니다. 누락이나 광고 문구가 없는지 원문과 확인해 주세요.');}}
     if(!out.body)out.warnings.push('제목과 대표 사진만 가져왔습니다. 본문은 직접 붙여넣어 주세요.');
-    if(meta['og:image'])out.images=[{url:new URL(meta['og:image'],url).href,caption:'',selected:true}];
+    if(!out.images.length&&meta['og:image'])out.images=[{url:new URL(meta['og:image'],url).href,caption:'',selected:true}];
   }
   out.images=out.images.slice(0,6);return out;
 }
